@@ -70,3 +70,26 @@ Standard Automatic Speech Recognition (ASR) pipelines rely heavily on external *
 |  • Temperature Scaling (T = 0.88) + Blank Penalty (-0.25)                         |
 |  • Pure-Acoustic CTC Prefix Beam Search (K = 12, Top-8 Pruning) -> 39 ARPAbet     |
 +-----------------------------------------------------------------------------------+
+```
+## Results & Ablation Study
+The domain adaptation hypothesis was rigorously tested by evaluating acoustic features on the validation and unseen test sets using Test-Time Augmentation (TTA). 
+
+- **Variant B (Baseline - Stage 1):** ~42.11% Phoneme Error Rate (PER)
+- **Variant C (Domain Adapted - Stage 2 SWA):** 12.91% Strict 39-Class PER (8.56% L2 Allophone-Equivalence PER)
+
+**Key Insight:** The massive ~29% absolute reduction in PER was primarily driven by unfreezing the WavLM backbone and utilizing the 6-Expert LoRA-MoE. Fine-tuning allowed the model to confidently map ambiguous, non-native acoustic boundaries (like taps, non-rhotic vowels, and shifted formants) to actual phonemes, drastically reducing substitution errors from 24.88% down to 9.40%.
+
+## Repository Structure
+The pipeline is contained within a cleanly structured Google Colab notebook, divided into 6 core engineering phases:
+1. **Environment Setup & Authentication:** Hugging Face OAuth and unified storage configuration.
+2. **Vocabulary & Data Ingestion:** 41-class deterministic mapping and Perceived IPA-to-ARPAbet parsing.
+3. **Model Architecture & Regularization:** Hybrid WavLM-ConBiMamba-LoRA-MoE initialization.
+4. **Curriculum Learning Stage 1:** 800-update baseline mixed-precision training.
+5. **Decoding, Evaluation & Diagnostics:** Pure-Acoustic CTC Prefix Beam Search and alignment inspection.
+6. **Target Domain Adaptation (Stage 2) & Visualizations:** Multi-layer fusion unfreeze, SWA training loop, TTA benchmarking, and error analysis charting.
+
+## Interactive Inference
+The project includes a standalone inference engine wrapped in a **Gradio v4** web interface. This allows for live microphone capture directly within the browser. The pipeline handles on-the-fly stereo-to-mono downmixing, 16 kHz resampling, feature extraction, and real-time CTC Prefix Beam decoding for arbitrary `.wav` files or live voice recordings.
+
+## Known Limitations
+As a pure-acoustic, LM-free system, the model is highly sensitive to background noise and compression artifacts (e.g., standard web-audio compression). In live microphone testing, the model successfully identifies sharp consonant boundaries (aided by high-frequency pre-emphasis TTA) but can exhibit aggressive deletion of continuous vowel sounds if the input SNR is poor. Future iterations will require integrating an N-gram Language Model (e.g., KenLM) during the decoding phase to recover dropped vowels via linguistic context.
