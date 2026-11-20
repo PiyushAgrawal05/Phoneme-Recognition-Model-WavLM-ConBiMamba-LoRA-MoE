@@ -1,95 +1,175 @@
 # Pure-Acoustic Non-Native (L2) Phoneme Recognition: Hybrid WavLM + ConBiMamba + Frame-Level LoRA-MoE
 
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-EE4C2C?style=flat-square&logo=pytorch)](https://pytorch.org/)
-[![Hugging Face Transformers](https://img.shields.io/badge/%F0%9F%A4%97%20Transformers-WavLM--Base--Plus-yellow?style=flat-square)](https://huggingface.co/microsoft/wavlm-base-plus)
-[![Task](https://img.shields.io/badge/Task-L2%20Phoneme%20Recognition%20%2F%20CAPT-blue?style=flat-square)]()
-[![Test Strict PER](https://img.shields.io/badge/Unseen%20Test%20Strict%20PER-12.91%25-success?style=flat-square)]()
-[![Test Equivalence PER](https://img.shields.io/badge/L2%20Equivalence%20PER-8.56%25-brightgreen?style=flat-square)]()
+[![Hugging Face Transformers](https://img.shields.io/badge/Transformers-WavLM--Base--Plus-yellow?style=flat-square)](https://huggingface.co/microsoft/wavlm-base-plus)
+[![Task](https://img.shields.io/badge/Task-L2%20Phoneme%20Recognition%20%2F%20MDD-blue?style=flat-square)]()
+[![Full Test Strict PER](https://img.shields.io/badge/Full%20Test%20Strict%20PER-13.15%25-success?style=flat-square)]()
+[![Allophone Equivalence PER](https://img.shields.io/badge/Allophone%20Equivalence%20PER-9.20%25-brightgreen?style=flat-square)]()
 
 ---
 
 ## 📌 1. Project Overview & Aim
 
-In **Computer-Assisted Pronunciation Training (CAPT)** and **Mispronunciation Detection and Diagnosis (MDD)**, a phoneme recognizer must transcribe *what the speaker actually pronounced*, not what they were supposed to say. 
-
-Standard Automatic Speech Recognition (ASR) pipelines rely heavily on external **Language Models (LMs)** or top-layer Transformer representations that carry strong lexical bias. When a non-native (L2) speaker mispronounces a word (e.g., pronouncing *"think"* as *"sink"* or *"three"* as *"tree"*), LM-biased models autocorrect the phoneme sequence back to the canonical dictionary pronunciation, rendering them useless for pronunciation assessment. Furthermore, training models on Grapheme-to-Phoneme (`G2P`) dictionary targets forces the acoustic encoder to hallucinate unpronounced phonemes on accented speech.
+This project develops a **pure-acoustic phoneme recognition system** as the first stage of a larger **Mispronunciation Detection and Diagnosis (MDD)** pipeline. The recognizer aims to represent the phonemes perceived in non-native (L2) speech rather than reconstructing words through an external language model.
 
 ### Core Objectives
-1. **100% Pure-Acoustic Modeling (Zero Language Model):** Build an end-to-end acoustic phoneme recognition system that decodes purely from acoustic frame probabilities without any lexical or language model prior.
-2. **Perceived Acoustic Ground-Truth Alignment:** Replace canonical dictionary prompts (`G2P`) on non-native datasets with a custom longest-first greedy **IPA-to-ARPAbet parser** over human-annotated perceived phonetic transcriptions, ensuring all L2 allophones (taps, glottal stops, non-rhotic vowels) are preserved.
-3. **Dynamic Frame-Level Accent Adaptation:** Design a parameter-efficient **6-Expert Frame-Level LoRA Mixture-of-Experts (LoRA-MoE)** injected into `WavLM-Base-Plus`, paired with a **13-Layer Learnable Acoustic Fusion** mechanism and a **ConBiMamba (Conformer + Bidirectional Selective State-Space)** sequence encoder.
-4. **High-Precision Acoustic Decoding:** Implement a pure-acoustic **CTC Prefix Beam Search Decoder** enhanced with **Stochastic Weight Averaging (SWA)** and **Pre-Emphasis Test-Time Augmentation (TTA)** to drive unseen L2-Arctic Phoneme Error Rate (PER) down from a **33.30% baseline to 12.91% (Strict 39-Class PER)** and **8.56% (L2 Allophone-Equivalence PER)**.
+
+1. **Acoustic Phoneme Recognition:** Decode phoneme sequences from acoustic model outputs without an external language model or pronunciation dictionary during inference.
+2. **Perceived-Phone Supervision:** Use L2-Arctic perceived IPA annotations for L2 adaptation, converted to the 39-class ARPAbet inventory through a custom IPA-to-ARPAbet parser.
+3. **Parameter-Efficient Adaptation:** Combine WavLM-Base-Plus, learnable hidden-layer fusion, six-expert frame-level LoRA-MoE modules, and custom bidirectional acoustic sequence blocks.
+4. **Acoustic Decoding:** Use CTC prefix beam search with pre-emphasis test-time augmentation (TTA), logit fusion, and Stage 2 stochastic weight averaging (SWA).
 
 ---
 
 ## 🏗️ 2. System Workflow & Pipeline
 
 ```text
-+-----------------------------------------------------------------------------------+
-|                        1. MULTI-CORPUS DATA INGESTION                             |
-|  • LibriSpeech (train.100)  --> Native English Baseline (G2P Targets)             |
-|  • SpeechOcean762 (train)   --> Non-Native Expansion (Human Phone Annotations)    |
-|  • L2-Arctic (scripted)     --> Target L2 Domain (80% Train / 10% Val / 10% Test) |
-|                                 Custom Perceived IPA-to-ARPAbet Greedy Parser     |
-+-----------------------------------------------------------------------------------+
-                                         │
-                                         ▼
-+-----------------------------------------------------------------------------------+
-|                     2. AUDIO NORMALIZATION & FRONT-END                            |
-|  • 16kHz Raw Waveform (<= 10s–15s) -> Per-Utterance Zero-Mean Unit-Variance Norm  |
-|  • Pre-trained WavLM-Base-Plus CNN Encoder (320x downsampling -> 20ms stride)     |
-|  • 6-Expert Frame-Level LoRA-MoE injected into Top 6 Transformer FFN Blocks       |
-|  • LayerNorm-Stabilized Learnable Weighted Sum across all 13 Hidden States        |
-+-----------------------------------------------------------------------------------+
-                                         │
-                                         ▼
-+-----------------------------------------------------------------------------------+
-|                     3. CONBIMAMBA SEQUENCE ENCODER (4 BLOCKS)                     |
-|  • Linear Projection (768 -> 256) + Spatial Dropout1d (p = 0.10)                  |
-|  • Block 1 & 2: Macaron FFN + Bi-Directional Selective Scan (Leaky Coarticulation)|
-|                 + Depthwise Separable Conv1d (K = 31) + Macaron FFN               |
-|  • [Intermediate CTC Head @ Block 2] --> 41 Classes (Aux Supervision)             |
-|  • Block 3 & 4: ConBiMamba Processing                                             |
-|  • [Final CTC Head @ Block 4]        --> 41 Classes (Primary Supervision)         |
-+-----------------------------------------------------------------------------------+
-                                         │
-                                         ▼
-+-----------------------------------------------------------------------------------+
-|                 4. TWO-STAGE CURRICULUM TRAINING & SWA                            |
-|  • Stage 1 (Generalization): 800 Updates on Interleaved LibriSpeech + SO762       |
-|    (WavLM & LoRA Frozen; Train ConBiMamba + Heads; Joint CTC: 0.7 Final/0.3 Inter)|
-|  • Stage 2 (L2 Adaptation): 700 Updates on In-Memory Speaker-Balanced L2-Arctic   |
-|    (Unfreeze Feature Proj, 12 WavLM Layers, LoRA-MoE, Layer Weights + SWA)        |
-+-----------------------------------------------------------------------------------+
-                                         │
-                                         ▼
-+-----------------------------------------------------------------------------------+
-|               5. ACOUSTIC TTA ENSEMBLE & PREFIX BEAM DECODING                     |
-|  • Pass 1: Standard Normalized Waveform  | Pass 2: Pre-Emphasized Waveform (0.95) |
-|  • Logit Blend (0.65 Pass1 + 0.35 Pass2) + Inter-CTC Blend (0.92 Final/0.08 Inter)|
-|  • Temperature Scaling (T = 0.88) + Blank Penalty (-0.25)                         |
-|  • Pure-Acoustic CTC Prefix Beam Search (K = 12, Top-8 Pruning) -> 39 ARPAbet     |
-+-----------------------------------------------------------------------------------+
++--------------------------------------------------------------------------+
+| 1. DATA                                                                   |
+| LibriSpeech train.100 + SpeechOcean762 train -> Stage 1 general training  |
+| L2-Arctic scripted -> 80% train / 10% validation / 10% test (seed 42)     |
+| L2-Arctic targets: perceived IPA -> custom ARPAbet mapping                |
++--------------------------------------------------------------------------+
+                                  |
+                                  v
++--------------------------------------------------------------------------+
+| 2. ACOUSTIC ENCODER                                                       |
+| 16 kHz raw waveform -> WavLM-Base-Plus                                    |
+| Learnable fusion of 13 hidden representations                             |
+| Six-expert frame-level LoRA-MoE in top six Transformer layers              |
+| MoE adapters in intermediate_dense and output_dense projections           |
++--------------------------------------------------------------------------+
+                                  |
+                                  v
++--------------------------------------------------------------------------+
+| 3. SEQUENCE MODEL                                                         |
+| Four custom bidirectional gated/convolutional acoustic blocks              |
+| Intermediate CTC head after Block 2; final CTC head after Block 4          |
+| 41 output classes: 39 ARPAbet phones + blank + unknown                     |
++--------------------------------------------------------------------------+
+                                  |
+                                  v
++--------------------------------------------------------------------------+
+| 4. TWO-STAGE TRAINING                                                     |
+| Stage 1: 800 updates on interleaved LibriSpeech + SpeechOcean762           |
+| Stage 2: 700 updates adapting to L2-Arctic; SWA over 21 checkpoints        |
++--------------------------------------------------------------------------+
+                                  |
+                                  v
++--------------------------------------------------------------------------+
+| 5. INFERENCE                                                              |
+| Normalized + pre-emphasized waveform passes                               |
+| 0.65 / 0.35 acoustic logit blend; 0.92 / 0.08 final/intermediate blend     |
+| Temperature 0.88; blank adjustment 0.25                                   |
+| CTC prefix beam search: beam 12, top-8 tokens; no external LM              |
++--------------------------------------------------------------------------+
 ```
-## Results & Ablation Study
-The domain adaptation hypothesis was rigorously tested by evaluating acoustic features on the validation and unseen test sets using Test-Time Augmentation (TTA). 
 
-- **Variant B (Baseline - Stage 1):** ~42.11% Phoneme Error Rate (PER)
-- **Variant C (Domain Adapted - Stage 2 SWA):** 12.91% Strict 39-Class PER (8.56% L2 Allophone-Equivalence PER)
+### Model Components
 
-**Key Insight:** The massive ~29% absolute reduction in PER was primarily driven by unfreezing the WavLM backbone and utilizing the 6-Expert LoRA-MoE. Fine-tuning allowed the model to confidently map ambiguous, non-native acoustic boundaries (like taps, non-rhotic vowels, and shifted formants) to actual phonemes, drastically reducing substitution errors from 24.88% down to 9.40%.
+- **Backbone:** `microsoft/wavlm-base-plus` with learnable fusion of its 13 hidden representations.
+- **Frame-level LoRA-MoE:** Six experts per router, rank 8 and alpha 16, inserted into `intermediate_dense` and `output_dense` in the top six WavLM Transformer layers (12 routers total).
+- **Sequence encoder:** Four custom bidirectional gated/convolutional acoustic blocks (`d_model=256`). These are Mamba-inspired custom blocks, not a canonical Mamba selective state-space implementation.
+- **CTC heads:** Intermediate supervision after the second block and final prediction after the fourth block.
+
+### Training
+
+- **Stage 1:** 800 updates on interleaved LibriSpeech and SpeechOcean762. WavLM parameters are frozen while the downstream projection, sequence encoder and CTC heads are trained.
+- **Stage 2:** 700 updates on shuffled L2-Arctic training utterances, with differential learning rates for acoustic-backbone and task-specific parameters. SWA averages 21 checkpoints sampled every 10 updates over the final 200 updates.
+
+---
+
+## 📊 Results & Analysis
+
+### Full L2-Arctic Test Set
+
+| Metric | Result |
+|---|---:|
+| Test utterances | 360 |
+| Speakers / L1 groups | 24 / 6 |
+| Reference phonemes | 11,505 |
+| **Strict 39-class PER** | **13.1508%** |
+| Allophone-equivalence PER | 9.1952% |
+
+| Error type | Count |
+|---|---:|
+| Substitutions | 1,110 |
+| Deletions | 193 |
+| Insertions | 210 |
+| Hits | 10,202 |
+
+The allophone-equivalence score applies the predefined mapping `DH→D`, `IY→IH`, `Z→S`, `AO→AA`, `AH→AA`, `ER→AH`, and `G→K`, and collapses adjacent repeated labels. It is a more permissive supplementary metric; strict PER is the primary result.
+
+### L1-Wise Strict PER
+
+| L1 group | Pooled PER |
+|---|---:|
+| Chinese | 14.77% |
+| Hindi | 14.07% |
+| Vietnamese | 13.62% |
+| Spanish | 13.23% |
+| Arabic | 12.04% |
+| Korean | 11.37% |
+
+Each group contains four speakers. These differences are descriptive and are not evidence of statistically significant L1 effects.
+
+### Phoneme-Level Error Analysis
+
+- Highest reference error rates among frequently observed phones include **DH (42.53%)**, **AA (36.02%)**, **Z (28.97%)**, and **AO (26.44%)**.
+- Prominent reciprocal substitution pairs: **DH↔D (106)**, **Z↔S (101)**, and **IY↔IH (98)**.
+- Most frequent deletions: AH (36) and R (26).
+- Most frequent insertions: D (38) and T (28).
+
+### LoRA-MoE Routing Analysis
+
+Routing probabilities were collected for 12 routers (six layers × two projections), each containing six experts, across 360 test utterances and 24 speakers.
+
+The exploratory between-L1/within-L1 variability analysis highlighted these combinations based on both variability ratio and absolute L1-mean range:
+
+| Router–expert | Between/within ratio | L1 mean range |
+|---|---:|---:|
+| L7 intermediate_dense – E6 | 3.395 | 0.1696 |
+| L6 intermediate_dense – E5 | 3.224 | 0.1324 |
+| L7 intermediate_dense – E2 | 3.163 | 0.0929 |
+| L8 intermediate_dense – E3 | 2.892 | 0.0983 |
+
+These are descriptive candidates for further investigation, not proof of accent-specific expert specialization. There are four speakers per L1 group, and no statistical significance or causal L1 effect is claimed.
+
+### Baseline Comparison Note
+
+An earlier Conformer/G2P baseline was reported at 33.30% test PER. It is not a controlled, directly comparable ablation: the model setup and L2 target-generation method differ from the current perceived-IPA-supervised system. The 13.1508% result above is the verified full-test result for the current model and evaluation pipeline.
+
+---
 
 ## Repository Structure
-The pipeline is contained within a cleanly structured Google Colab notebook, divided into 6 core engineering phases:
-1. **Environment Setup & Authentication:** Hugging Face OAuth and unified storage configuration.
-2. **Vocabulary & Data Ingestion:** 41-class deterministic mapping and Perceived IPA-to-ARPAbet parsing.
-3. **Model Architecture & Regularization:** Hybrid WavLM-ConBiMamba-LoRA-MoE initialization.
-4. **Curriculum Learning Stage 1:** 800-update baseline mixed-precision training.
-5. **Decoding, Evaluation & Diagnostics:** Pure-Acoustic CTC Prefix Beam Search and alignment inspection.
-6. **Target Domain Adaptation (Stage 2) & Visualizations:** Multi-layer fusion unfreeze, SWA training loop, TTA benchmarking, and error analysis charting.
+
+The project is organized into the following parts:
+
+1. **Environment & Authentication:** Dependencies, Hugging Face authentication and checkpoint access.
+2. **Vocabulary & Data:** 41-class ARPAbet mapping, LibriSpeech, SpeechOcean762 and L2-Arctic preparation.
+3. **Model Architecture:** WavLM, learnable layer fusion, frame-level LoRA-MoE and custom acoustic sequence blocks.
+4. **Training:** Stage 1 general-speech training and Stage 2 L2-Arctic adaptation with SWA.
+5. **Inference & Evaluation:** Acoustic TTA, CTC prefix beam decoding and full-test PER.
+6. **Post-Training Analysis:** Expert routing, speaker/L1 performance and phoneme-level error analysis.
+
+Model checkpoint: [Hugging Face model repository](https://huggingface.co/hsuyip05/wavlm-conbimamba-lora-moe)
+
+Analysis artifacts are maintained separately in the private Hugging Face Dataset repository:
+`hsuyip05/mdd-analysis-artifacts`.
+
+---
 
 ## Interactive Inference
-The project includes a standalone inference engine wrapped in a **Gradio v4** web interface. This allows for live microphone capture directly within the browser. The pipeline handles on-the-fly stereo-to-mono downmixing, 16 kHz resampling, feature extraction, and real-time CTC Prefix Beam decoding for arbitrary `.wav` files or live voice recordings.
+
+The original development notebook contains an experimental Gradio interface for audio upload/microphone input, ARPAbet sequence prediction, optional reference PER, and an acoustic posterior heatmap. This interface is a phoneme-recognition demonstration; it does not implement complete phone-level mispronunciation localization or articulatory diagnosis.
+
+---
 
 ## Known Limitations
-As a pure-acoustic, LM-free system, the model is highly sensitive to background noise and compression artifacts (e.g., standard web-audio compression). In live microphone testing, the model successfully identifies sharp consonant boundaries (aided by high-frequency pre-emphasis TTA) but can exhibit aggressive deletion of continuous vowel sounds if the input SNR is poor. Future iterations will require integrating an N-gram Language Model (e.g., KenLM) during the decoding phase to recover dropped vowels via linguistic context.
+
+- The L2-Arctic split is utterance-level, not speaker-disjoint; results should not be described as evaluation on entirely unseen speakers.
+- Each L1 group contains four speakers, so L1 comparisons and routing variability are exploratory.
+- The custom IPA-to-ARPAbet parser is many-to-one for some symbols and skips unmatched IPA characters; perceived-phone distinctions may therefore be lost.
+- The custom bidirectional sequence block is Mamba-inspired but is not a canonical selective state-space Mamba implementation.
+- The current system recognizes acoustic phoneme sequences. Full expected-versus-perceived phone alignment, error localization, and articulatory diagnosis remain future MDD stages.
+- As an acoustic-only recognizer, performance may be affected by noise, recording quality and channel mismatch.
