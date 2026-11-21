@@ -36,32 +36,32 @@ This project develops a **pure-acoustic phoneme recognition system** as the firs
 | 2. ACOUSTIC ENCODER                                                       |
 | 16 kHz raw waveform -> WavLM-Base-Plus                                    |
 | Learnable fusion of 13 hidden representations                             |
-| Six-expert frame-level LoRA-MoE in top six Transformer layers              |
+| Six-expert frame-level LoRA-MoE in top six Transformer layers             |
 | MoE adapters in intermediate_dense and output_dense projections           |
 +--------------------------------------------------------------------------+
                                   |
                                   v
 +--------------------------------------------------------------------------+
 | 3. SEQUENCE MODEL                                                         |
-| Four custom bidirectional gated/convolutional acoustic blocks              |
-| Intermediate CTC head after Block 2; final CTC head after Block 4          |
-| 41 output classes: 39 ARPAbet phones + blank + unknown                     |
+| Four custom bidirectional gated/convolutional acoustic blocks             |
+| Intermediate CTC head after Block 2; final CTC head after Block 4         |
+| 41 output classes: 39 ARPAbet phones + blank + unknown                    |
 +--------------------------------------------------------------------------+
                                   |
                                   v
 +--------------------------------------------------------------------------+
 | 4. TWO-STAGE TRAINING                                                     |
-| Stage 1: 800 updates on interleaved LibriSpeech + SpeechOcean762           |
-| Stage 2: 700 updates adapting to L2-Arctic; SWA over 21 checkpoints        |
+| Stage 1: 800 updates on interleaved LibriSpeech + SpeechOcean762          |
+| Stage 2: 700 updates adapting to L2-Arctic; SWA over 21 checkpoints       |
 +--------------------------------------------------------------------------+
                                   |
                                   v
 +--------------------------------------------------------------------------+
 | 5. INFERENCE                                                              |
 | Normalized + pre-emphasized waveform passes                               |
-| 0.65 / 0.35 acoustic logit blend; 0.92 / 0.08 final/intermediate blend     |
+| 0.65 / 0.35 acoustic logit blend; 0.92 / 0.08 final/intermediate blend    |
 | Temperature 0.88; blank adjustment 0.25                                   |
-| CTC prefix beam search: beam 12, top-8 tokens; no external LM              |
+| CTC prefix beam search: beam 12, top-8 tokens; no external LM             |
 +--------------------------------------------------------------------------+
 ```
 
